@@ -23,6 +23,83 @@
 <div class="mobilebar"><button onclick="showPage('dashboard')">📊<br>Start</button><button onclick="showPage('fields')">🌾<br>Pola</button><button onclick="showPage('operations')">🧪<br>Zabiegi</button><button onclick="showPage('finances')">💰<br>Finanse</button><button onclick="showPage('machines')">🚜<br>Maszyny</button></div>
 <div id="modal" class="modal"><div class="modalbox"><div class="modalhead"><h3 id="modalTitle"></h3><button onclick="closeModal()">✕</button></div><div id="modalBody"></div></div></div><div id="toast" class="toast"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
+import { getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signInWithRedirect, signOut, setPersistence, browserLocalPersistence } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAtWzC9e5dLSjmnFONVQ_d6JwSOb2OzhQA",
+  authDomain: "agromanager-2d113.firebaseapp.com",
+  projectId: "agromanager-2d113",
+  storageBucket: "agromanager-2d113.firebasestorage.app",
+  messagingSenderId: "968764019693",
+  appId: "1:968764019693:web:4477bd3a553e035e1c4de4",
+  measurementId: "G-K3RG4W61TD"
+};
+
+const firebaseApp = initializeApp(firebaseConfig);
+const firebaseAuth = getAuth(firebaseApp);
+const firestore = getFirestore(firebaseApp);
+const provider = new GoogleAuthProvider();
+let cloudReady = false;
+let currentUser = null;
+let pendingTimer = null;
+
+function fire(name, detail={}) { window.dispatchEvent(new CustomEvent(name,{detail})); }
+async function stateRef(user){ return doc(firestore,'users',user.uid,'app','state'); }
+
+window.agroCloud = {
+  async login(){
+    try { await signInWithPopup(firebaseAuth, provider); }
+    catch(err){
+      if(['auth/popup-blocked','auth/cancelled-popup-request','auth/operation-not-supported-in-this-environment'].includes(err?.code)) {
+        await signInWithRedirect(firebaseAuth, provider);
+      } else { throw err; }
+    }
+  },
+  async logout(){ await signOut(firebaseAuth); },
+  getUser(){ return currentUser; },
+  isReady(){ return cloudReady; },
+  scheduleSave(data){
+    if(!currentUser || !cloudReady) return;
+    clearTimeout(pendingTimer);
+    pendingTimer=setTimeout(async()=>{
+      try{
+        await setDoc(await stateRef(currentUser), {data: JSON.parse(JSON.stringify(data)), updatedAt: serverTimestamp()}, {merge:true});
+        fire('agro-cloud-status',{status:'saved',user:currentUser});
+      }catch(error){ fire('agro-cloud-status',{status:'error',user:currentUser,error}); }
+    },450);
+  },
+  async saveNow(data){
+    if(!currentUser) throw new Error('Najpierw zaloguj się do Google.');
+    await setDoc(await stateRef(currentUser), {data: JSON.parse(JSON.stringify(data)), updatedAt: serverTimestamp()}, {merge:true});
+    fire('agro-cloud-status',{status:'saved',user:currentUser});
+  }
+};
+
+try { await setPersistence(firebaseAuth,browserLocalPersistence); } catch(e) { console.warn('Firebase persistence:',e); }
+
+onAuthStateChanged(firebaseAuth, async user => {
+  currentUser=user||null; cloudReady=false;
+  if(!user){ fire('agro-cloud-auth',{user:null,status:'offline'}); return; }
+  fire('agro-cloud-auth',{user,status:'loading'});
+  try{
+    const snap=await getDoc(await stateRef(user));
+    if(snap.exists() && snap.data()?.data){
+      fire('agro-cloud-data',{data:snap.data().data,user});
+    }else if(typeof window.getAgroData==='function'){
+      await setDoc(await stateRef(user), {data: JSON.parse(JSON.stringify(window.getAgroData())), updatedAt: serverTimestamp()}, {merge:true});
+      fire('agro-cloud-status',{status:'migrated',user});
+    }
+    cloudReady=true;
+    fire('agro-cloud-auth',{user,status:'ready'});
+  }catch(error){
+    console.error('Firestore load:',error);
+    fire('agro-cloud-status',{status:'error',user,error});
+  }
+});
+</script>
 <script>
 const KEY='agromanager_v3_fields_history_map';
 const DEFAULT_USER='Agro-Polo';
@@ -32,7 +109,16 @@ if(!db.parcels && db.fields){db.parcels=db.fields;delete db.fields}
 if(!db.farmFields){db.farmFields=(db.crops||[]).map(c=>({id:c.designation,name:'Pole '+c.designation,area:c.area,crop:c.crop,variety:'',parcels:c.parcels||[],payments:c.payments||'',ecoschemes:c.ecoschemes||'',history:[{season:2026,crop:c.crop,variety:'',area:c.area,yield:'',notes:'Import ARiMR 2026'}]}))}
 if(!db.parcels)db.parcels=[];if(!db.operations)db.operations=[];if(!db.machines)db.machines=[];if(!db.finances)db.finances=[];
 let page='dashboard', selectedField=null, mapObj=null;
-function save(){localStorage.setItem(KEY,JSON.stringify(db))}function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return new Intl.NumberFormat('pl-PL',{style:'currency',currency:'PLN',maximumFractionDigits:0}).format(Number(n)||0)}function toast(t){let e=document.getElementById('toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',2000)}
+function save(){localStorage.setItem(KEY,JSON.stringify(db));if(window.agroCloud)window.agroCloud.scheduleSave(db)}window.getAgroData=()=>db;function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function money(n){return new Intl.NumberFormat('pl-PL',{style:'currency',currency:'PLN',maximumFractionDigits:0}).format(Number(n)||0)}function toast(t){let e=document.getElementById('toast');e.textContent=t;e.style.display='block';setTimeout(()=>e.style.display='none',2000)}
+let cloudState={user:null,status:'offline',message:'Dane tylko na tym urządzeniu'};
+function cloudLabel(){if(cloudState.status==='ready')return '☁️ Zsynchronizowano z chmurą';if(cloudState.status==='loading')return '☁️ Łączenie z chmurą…';if(cloudState.status==='saved')return '☁️ Zapisano w chmurze';if(cloudState.status==='migrated')return '☁️ Dane przeniesione do chmury';if(cloudState.status==='error')return '⚠️ Błąd synchronizacji';return '📱 Dane lokalne — zaloguj się do chmury'}
+function cloudAccount(){return cloudState.user?.email||''}
+async function cloudLogin(){try{await window.agroCloud?.login()}catch(e){console.error(e);alert('Nie udało się zalogować przez Google: '+(e.message||e))}}
+async function cloudLogout(){if(!confirm('Wylogować z chmury? Dane pozostaną zapisane lokalnie na tym urządzeniu.'))return;try{await window.agroCloud?.logout();render()}catch(e){alert('Nie udało się wylogować: '+(e.message||e))}}
+async function cloudSaveNow(){try{await window.agroCloud?.saveNow(db);toast('Kopia zapisana w chmurze')}catch(e){alert(e.message||e)}}
+window.addEventListener('agro-cloud-data',e=>{if(!e.detail?.data)return;db=e.detail.data;ensureSettings();localStorage.setItem(KEY,JSON.stringify(db));render();toast('Wczytano dane z chmury')});
+window.addEventListener('agro-cloud-auth',e=>{cloudState.user=e.detail.user||null;cloudState.status=e.detail.status||'offline';if(page==='backup'||page==='dashboard')render()});
+window.addEventListener('agro-cloud-status',e=>{cloudState.user=e.detail.user||cloudState.user;cloudState.status=e.detail.status||cloudState.status;if(e.detail.status==='error')console.error('Synchronizacja Firebase:',e.detail.error);if(page==='backup'||page==='dashboard')render()});
 function showPage(p){selectedField=null;page=p;document.querySelectorAll('.nav button').forEach(b=>b.classList.toggle('active',b.dataset.page===p));render()}document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>showPage(b.dataset.page));
 function ensureSettings(){db.settings=db.settings||{};if(!db.settings.userName)db.settings.userName=DEFAULT_USER;}
 function userName(){ensureSettings();return db.settings.userName||DEFAULT_USER;}
@@ -41,7 +127,7 @@ function openUserSettings(){ensureSettings();modal('Użytkownik',`<form onsubmit
 function saveUserSettings(e){e.preventDefault();ensureSettings();db.settings.userName=String(new FormData(e.target).get('userName')||DEFAULT_USER).trim()||DEFAULT_USER;save();closeModal();render();toast('Nazwa użytkownika zmieniona')}
 function operationCostPerHa(o,f){if(o.costPerHa!==undefined&&o.costPerHa!=='')return Number(o.costPerHa)||0;const a=Number(f?.area||0);return a>0?(Number(o.cost||0)/a):0;}
 function render(){const c=document.getElementById('content');const titles={dashboard:'Dashboard',fields:'Pola',parcels:'Działki ewidencyjne',machines:'Maszyny',operations:'Zabiegi',finances:'Finanse',backup:'Dane i kopie'};document.getElementById('title').textContent=selectedField?'Karta pola':titles[page];if(selectedField)return fieldCard(c,selectedField);if(page==='dashboard')dashboard(c);if(page==='fields')fieldsPage(c);if(page==='parcels')parcelsPage(c);if(page==='machines')machinesPage(c);if(page==='operations')operationsPage(c);if(page==='finances')financesPage(c);if(page==='backup')backupPage(c)}
-function dashboard(c){ensureSettings();const area=db.farmFields.reduce((sum,x)=>sum+Number(x.area||0),0);c.innerHTML=`<div class="dashhead"><div><div class="muted">AgroManager</div><h2>🌱 AgroManager</h2></div><div class="userchip"><div class="useravatar">${esc(userInitial())}</div><div style="flex:1"><div class="muted">Użytkownik</div><b>${esc(userName())}</b></div><button onclick="openUserSettings()">Zmień</button></div></div><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="card"><div class="muted">Powierzchnia pól</div><div class="metric">${area.toFixed(2)} ha</div></div><div class="card"><div class="muted">Pola</div><div class="metric">${db.farmFields.length}</div></div></div><div class="section card"><h2 style="margin-top:0">🛰️ Mapa gospodarstwa</h2><div id="dashboardMap" class="dashboard-map"></div><p id="dashboardMapStatus" class="muted">Pobieranie granic wszystkich pól z ULDK GUGiK…</p></div><div class="section"><h2>Pola</h2>${fieldTable(8)}</div>`;setTimeout(loadDashboardMap,100)}
+function dashboard(c){ensureSettings();const area=db.farmFields.reduce((sum,x)=>sum+Number(x.area||0),0);c.innerHTML=`<div class="dashhead"><div><div class="muted">AgroManager</div><h2>🌱 AgroManager</h2></div><div class="userchip"><div class="useravatar">${esc(userInitial())}</div><div style="flex:1"><div class="muted">Użytkownik</div><b>${esc(userName())}</b><div class="muted" style="margin-top:2px">${esc(cloudLabel())}</div></div><button onclick="openUserSettings()">Zmień</button></div></div><div class="grid" style="grid-template-columns:repeat(2,minmax(0,1fr))"><div class="card"><div class="muted">Powierzchnia pól</div><div class="metric">${area.toFixed(2)} ha</div></div><div class="card"><div class="muted">Pola</div><div class="metric">${db.farmFields.length}</div></div></div><div class="section card"><h2 style="margin-top:0">🛰️ Mapa gospodarstwa</h2><div id="dashboardMap" class="dashboard-map"></div><p id="dashboardMapStatus" class="muted">Pobieranie granic wszystkich pól z ULDK GUGiK…</p></div><div class="section"><h2>Pola</h2>${fieldTable(8)}</div>`;setTimeout(loadDashboardMap,100)}
 function fieldTable(limit){let arr=limit?db.farmFields.slice(0,limit):db.farmFields;return `<div class="tablewrap"><table class="table"><thead><tr><th>Pole</th><th>Uprawa 2026</th><th>Powierzchnia</th><th>Działki ew.</th><th>Historia</th><th></th></tr></thead><tbody>${arr.map(f=>`<tr class="clickrow" onclick="openFieldCard('${esc(f.id)}')"><td><b>${esc(f.name||('Pole '+f.id))}</b></td><td>${esc(f.crop)}</td><td>${Number(f.area).toFixed(2)} ha</td><td>${(f.parcels||[]).length}</td><td>${(f.history||[]).length} sezon(y)</td><td><button onclick="event.stopPropagation();deleteField('${esc(f.id)}')">Usuń</button></td></tr>`).join('')}</tbody></table></div>`}
 function fieldsPage(c){c.innerHTML=`<div class="actions" style="margin-bottom:12px"><button class="primary" onclick="openNewField()">＋ Dodaj pole</button><button onclick="openMergeFields()">🔗 Połącz pola</button></div>${fieldTable()}`}
 function parcelShort(pid){const p=db.parcels.find(x=>x.identifier===pid);return p?.plot||String(pid||'').split('.').pop()||pid}
@@ -70,7 +156,7 @@ function updateOperationCostPreview(form){if(!form)return;const sel=form.element
 function saveOperation(e){e.preventDefault();const x=Object.fromEntries(new FormData(e.target)),f=db.farmFields.find(q=>q.id===x.fieldId);x.fieldName=f?.name||x.fieldId;x.costPerHa=Number(x.costPerHa||0);x.cost=x.costPerHa*Number(f?.area||0);db.operations.push(x);save();closeModal();render();toast('Zabieg zapisany: '+money(x.costPerHa)+'/ha, razem '+money(x.cost))}
 function machinesPage(c){c.innerHTML=`<div class="actions"><button class="primary" onclick="openMachine()">＋ Dodaj maszynę</button></div><div class="section tablewrap"><table class="table"><thead><tr><th>Maszyna</th><th>Typ</th><th>Rok</th><th>Motogodziny</th></tr></thead><tbody>${db.machines.length?db.machines.map(x=>`<tr><td>${esc(x.name)}</td><td>${esc(x.type)}</td><td>${esc(x.year)}</td><td>${esc(x.hours)}</td></tr>`).join(''):'<tr><td colspan="4" class="empty">Brak maszyn.</td></tr>'}</tbody></table></div>`}function openMachine(){modal('Dodaj maszynę',`<form onsubmit="saveMachine(event)"><div class="form"><div class="field"><label>Nazwa</label><input name="name" required></div><div class="field"><label>Typ</label><input name="type"></div><div class="field"><label>Rok</label><input name="year" type="number"></div><div class="field"><label>Motogodziny</label><input name="hours" type="number" step=".1"></div></div>${formButtons()}</form>`)}function saveMachine(e){e.preventDefault();db.machines.push(Object.fromEntries(new FormData(e.target)));save();closeModal();render()}
 function financesPage(c){const co=db.finances.filter(x=>x.type==='cost').reduce((s,x)=>s+Number(x.amount||0),0),inc=db.finances.filter(x=>x.type==='income').reduce((s,x)=>s+Number(x.amount||0),0);c.innerHTML=`<div class="grid"><div class="card"><div class="muted">Przychody</div><div class="metric">${money(inc)}</div></div><div class="card"><div class="muted">Koszty</div><div class="metric">${money(co)}</div></div><div class="card"><div class="muted">Wynik</div><div class="metric">${money(inc-co)}</div></div></div><div class="section"><button class="primary" onclick="openFinance()">＋ Dodaj pozycję</button></div>`}function openFinance(){modal('Dodaj pozycję finansową',`<form onsubmit="saveFinance(event)"><div class="form"><div class="field"><label>Data</label><input name="date" type="date" value="${new Date().toISOString().slice(0,10)}"></div><div class="field"><label>Typ</label><select name="type"><option value="cost">Koszt</option><option value="income">Przychód</option></select></div><div class="field"><label>Kategoria</label><input name="category"></div><div class="field"><label>Kwota</label><input name="amount" type="number" step=".01" required></div><div class="field full"><label>Opis</label><input name="note"></div></div>${formButtons()}</form>`)}function saveFinance(e){e.preventDefault();db.finances.push(Object.fromEntries(new FormData(e.target)));save();closeModal();render()}
-function backupPage(c){c.innerHTML=`<div class="card"><h2>📱 Aplikacja na telefon</h2><p>AgroManager może działać jako aplikacja PWA z ikoną na ekranie głównym.</p><div class="actions"><button id="installAppBtn" class="primary" onclick="installAgroManager()" style="display:none">⬇ Zainstaluj AgroManager</button></div><div id="installHelp" class="install-note">Jeżeli przycisk instalacji się nie pojawi, otwórz menu przeglądarki i wybierz „Zainstaluj aplikację” lub „Dodaj do ekranu głównego”.</div></div><div class="section card"><h2>👤 Użytkownik</h2><p>Aktualna nazwa: <b>${esc(userName())}</b></p><button onclick="openUserSettings()">Zmień użytkownika</button></div><div class="section card"><h2>🔐 Dane i kopie</h2><p>Dane zapisują się lokalnie w aplikacji. Wykonuj kopię JSON po większych zmianach.</p><div class="actions"><button class="primary" onclick="exportData()">⬇ Eksportuj kopię</button><button onclick="document.getElementById('file').click()">⬆ Importuj kopię</button><input id="file" type="file" accept=".json" style="display:none" onchange="importData(event)"></div></div>`;refreshInstallButton()}function exportData(){const b=new Blob([JSON.stringify(db,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='agromanager-backup.json';a.click();URL.revokeObjectURL(a.href)}function importData(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{db=JSON.parse(r.result);save();render();toast('Kopia odtworzona')}catch{alert('Nieprawidłowa kopia')}};r.readAsText(f)}
+function backupPage(c){const logged=!!cloudState.user;c.innerHTML=`<div class="card"><h2>📱 Aplikacja na telefon</h2><p>AgroManager może działać jako aplikacja PWA z ikoną na ekranie głównym.</p><div class="actions"><button id="installAppBtn" class="primary" onclick="installAgroManager()" style="display:none">⬇ Zainstaluj AgroManager</button></div><div id="installHelp" class="install-note">Jeżeli przycisk instalacji się nie pojawi, otwórz menu przeglądarki i wybierz „Zainstaluj aplikację” lub „Dodaj do ekranu głównego”.</div></div><div class="section card"><h2>☁️ Chmura Google / Firebase</h2><p><b>${esc(cloudLabel())}</b></p>${logged?`<p class="muted">Konto: ${esc(cloudAccount())}</p><div class="actions"><button class="primary" onclick="cloudSaveNow()">☁️ Zapisz teraz</button><button onclick="cloudLogout()">Wyloguj z chmury</button></div>`:`<p>Dane są nadal bezpiecznie zapisywane lokalnie. Zaloguj się przez Google, aby utworzyć prywatną kopię w Firestore i synchronizować zmiany.</p><button class="primary" onclick="cloudLogin()">G Zaloguj przez Google</button>`}<div class="install-note" style="margin-top:12px">Po zalogowaniu każda zmiana jest zapisywana lokalnie oraz automatycznie synchronizowana z Twoją prywatną bazą Firestore.</div></div><div class="section card"><h2>👤 Użytkownik</h2><p>Aktualna nazwa: <b>${esc(userName())}</b></p><button onclick="openUserSettings()">Zmień użytkownika</button></div><div class="section card"><h2>🔐 Kopia ręczna</h2><p>Eksport JSON pozostaje dodatkową kopią bezpieczeństwa niezależną od chmury.</p><div class="actions"><button class="primary" onclick="exportData()">⬇ Eksportuj kopię</button><button onclick="document.getElementById('file').click()">⬆ Importuj kopię</button><input id="file" type="file" accept=".json" style="display:none" onchange="importData(event)"></div></div>`;refreshInstallButton()}function exportData(){const b=new Blob([JSON.stringify(db,null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='agromanager-backup.json';a.click();URL.revokeObjectURL(a.href)}function importData(e){const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{db=JSON.parse(r.result);save();render();toast('Kopia odtworzona')}catch{alert('Nieprawidłowa kopia')}};r.readAsText(f)}
 function quickAdd(){modal('Co chcesz dodać?',`<div class="grid" style="grid-template-columns:1fr 1fr"><button onclick="closeModal();openNewField()">🌾<br>Pole</button><button onclick="closeModal();openOperation()">🧪<br>Zabieg</button><button onclick="closeModal();openMachine()">🚜<br>Maszyna</button><button onclick="closeModal();openFinance()">💰<br>Finanse</button></div>`)}
 let deferredInstallPrompt=null;
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredInstallPrompt=e;refreshInstallButton()});
