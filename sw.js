@@ -1,4 +1,4 @@
-const CACHE='agromanager-v13-9';
+const CACHE='agromanager-v13-10-oprysk-save';
 const APP_SHELL=['./','./index.html','./manifest.webmanifest','./icon-192.png','./icon-512.png','./version.json'];
 
 self.addEventListener('install',event=>{
